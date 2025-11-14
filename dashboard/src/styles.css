@@ -1,0 +1,157 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.45;
+  color: #1a1c1f;
+  background-color: #f4f6fb;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+header {
+  background: linear-gradient(90deg, #246bfd, #3cc6ff);
+  color: white;
+  padding: 1.8rem 3rem;
+  box-shadow: 0 2px 15px rgba(36, 107, 253, 0.3);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+header p {
+  margin: 0.4rem 0 0;
+}
+
+main {
+  flex: 1;
+  padding: 2rem 3rem;
+}
+
+.grid {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.grid-4 {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.card {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 16px;
+  box-shadow: 0 6px 18px rgba(14, 42, 71, 0.12);
+}
+
+.card h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+  color: #5d6a7f;
+}
+
+.card .value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: #246bfd;
+}
+
+.two-column {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1.5rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid #e6ecf5;
+}
+
+th {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05rem;
+  color: #7b879b;
+}
+
+tbody tr:hover {
+  background: #f8faff;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02rem;
+}
+
+.status-accepted {
+  background: rgba(67, 217, 135, 0.12);
+  color: #17864f;
+}
+
+.status-pending {
+  background: rgba(255, 193, 7, 0.15);
+  color: #f29d02;
+}
+
+.status-completed {
+  background: rgba(36, 107, 253, 0.1);
+  color: #1b54d0;
+}
+
+.controls form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.controls label {
+  font-weight: 600;
+}
+
+.controls input,
+.controls select,
+.controls textarea {
+  padding: 0.65rem;
+  border: 1px solid #ccd5e4;
+  border-radius: 10px;
+  font-size: 0.95rem;
+}
+
+.controls button {
+  background: #246bfd;
+  border: none;
+  color: white;
+  padding: 0.75rem;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.controls button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 15px rgba(36, 107, 253, 0.25);
+}
+
