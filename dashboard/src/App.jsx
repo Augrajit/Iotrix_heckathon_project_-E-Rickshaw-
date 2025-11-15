@@ -49,8 +49,27 @@ export default function App() {
   return (
     <div className="app-shell">
       <header>
-        <h1>Accessible E-Rickshaw Automation System</h1>
-        <p>Real-time operations dashboard for fleet supervisors</p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <h1>Accessible E-Rickshaw Automation System</h1>
+            <p>Real-time operations dashboard for fleet supervisors</p>
+          </div>
+          <a
+            href="http://localhost:5174"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              color: "white",
+              textDecoration: "none",
+              padding: "0.5rem 1rem",
+              background: "rgba(255, 255, 255, 0.2)",
+              borderRadius: "8px",
+              fontWeight: "600",
+            }}
+          >
+            🚲 Puller Dashboard
+          </a>
+        </div>
       </header>
       <main>
         {error && <div className="card" style={{ color: "#d9534f" }}>{error}</div>}

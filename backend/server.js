@@ -108,6 +108,7 @@ const rideSchema = new Schema(
         "ACCEPTED",
         "REJECTED",
         "CANCELLED",
+        "PICKED_UP",
         "COMPLETED",
       ],
       default: "PENDING_ASSIGNMENT",
@@ -216,15 +217,57 @@ wss.on("connection", (ws) => {
   });
 });
 
-async function assignRideToPuller(rideDoc)
-{
-  const availableEntries = Array.from(pullerSockets.entries());
-  if (availableEntries.length === 0)
-  {
+// Calculate distance using Haversine formula
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371e3; // Earth radius in meters
+  const φ1 = (lat1 * Math.PI) / 180;
+  const φ2 = (lat2 * Math.PI) / 180;
+  const Δφ = ((lat2 - lat1) * Math.PI) / 180;
+  const Δλ = ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c; // Distance in meters
+}
+
+// Store active ride assignments with timestamps for timeout handling
+const activeRideAssignments = new Map(); // rideId => { assignedAt, timeoutId }
+
+async function assignRideToPuller(rideDoc) {
+  // TEST CASE 8: Proximity-based priority assignment
+  const availablePullers = [];
+  
+  // Get all available pullers with their locations
+  for (const [pullerId, ws] of pullerSockets.entries()) {
+    const puller = await Puller.findOne({ pullerId });
+    if (puller && puller.status === "AVAILABLE" && puller.lastKnownLocation) {
+      const distance = calculateDistance(
+        rideDoc.pickupLocation?.latitude || 0,
+        rideDoc.pickupLocation?.longitude || 0,
+        puller.lastKnownLocation.latitude,
+        puller.lastKnownLocation.longitude
+      );
+      availablePullers.push({
+        pullerId,
+        ws,
+        distance,
+        location: puller.lastKnownLocation
+      });
+    }
+  }
+
+  if (availablePullers.length === 0) {
     console.log("[DISPATCH] No pullers online. Marking ride as pending.");
     return null;
   }
-  const [pullerId, ws] = availableEntries[0];
+
+  // Sort by proximity (nearest first) - TEST CASE 8
+  availablePullers.sort((a, b) => a.distance - b.distance);
+
+  // Send notification to ALL available pullers (TEST CASE 8: All pullers receive notification)
   const payload = {
     type: "ASSIGN_RIDE",
     rideId: rideDoc.rideId,
@@ -234,13 +277,58 @@ async function assignRideToPuller(rideDoc)
     dropLat: rideDoc.dropLocation?.latitude || 0,
     dropLon: rideDoc.dropLocation?.longitude || 0,
   };
-  ws.send(JSON.stringify(payload));
-  console.log(`[DISPATCH] Ride ${rideDoc.rideId} → ${pullerId}`);
+
+  // Broadcast to all available pullers (nearest first priority)
+  for (const puller of availablePullers) {
+    try {
+      puller.ws.send(JSON.stringify({
+        ...payload,
+        priority: puller.distance < 1000 ? "HIGH" : "NORMAL", // Nearest get high priority
+        distance: Math.round(puller.distance)
+      }));
+      console.log(`[DISPATCH] Ride ${rideDoc.rideId} → ${puller.pullerId} (${Math.round(puller.distance)}m away)`);
+    } catch (error) {
+      console.error(`[DISPATCH] Error sending to ${puller.pullerId}:`, error);
+    }
+  }
+
   rideDoc.status = "ASSIGNED";
-  rideDoc.pullerId = pullerId;
   await rideDoc.save();
-  await Puller.updateOne({ pullerId }, { status: "ON_TRIP" });
-  return pullerId;
+
+  // TEST CASE 8: Set timeout - if no puller accepts within 60 seconds, expire request
+  const timeoutId = setTimeout(async () => {
+    const updatedRide = await Ride.findOne({ rideId: rideDoc.rideId });
+    if (updatedRide && updatedRide.status === "ASSIGNED") {
+      // No puller accepted within 60 seconds
+      updatedRide.status = "CANCELLED";
+      await updatedRide.save();
+      
+      // Notify all pullers that request expired
+      for (const puller of availablePullers) {
+        try {
+          puller.ws.send(JSON.stringify({
+            type: "CANCEL_RIDE",
+            rideId: rideDoc.rideId,
+            reason: "Request expired - no puller accepted within 60 seconds"
+          }));
+        } catch (error) {
+          console.error(`[DISPATCH] Error notifying expiry to ${puller.pullerId}:`, error);
+        }
+      }
+      
+      logTestEvent(8, "TIMEOUT", `Ride ${rideDoc.rideId} expired - no puller accepted`);
+      console.log(`[DISPATCH] Ride ${rideDoc.rideId} expired - Red LED should turn ON`);
+    }
+    activeRideAssignments.delete(rideDoc.rideId);
+  }, 60000); // 60 seconds timeout
+
+  activeRideAssignments.set(rideDoc.rideId, {
+    assignedAt: new Date(),
+    timeoutId,
+    availablePullers: availablePullers.map(p => p.pullerId)
+  });
+
+  return availablePullers[0].pullerId; // Return nearest puller ID
 }
 
 // -------------------------------------------------------------------
@@ -300,20 +388,62 @@ app.get("/requestRide", async (req, res) => {
 /**
  * POST /acceptRide
  * Payload: { rideId, pullerId }
+ * TEST CASE 9: Conflict resolution - first timestamp wins
  */
 app.post("/acceptRide", async (req, res) => {
   const { rideId, pullerId } = req.body;
   const ride = await Ride.findOne({ rideId });
-  if (!ride)
-  {
+  if (!ride) {
     return res.status(404).json({ error: "Ride not found" });
   }
+
+  // TEST CASE 9: Conflict resolution - check if already accepted
+  if (ride.status === "ACCEPTED" && ride.pullerId !== pullerId) {
+    // Another puller already accepted (first timestamp wins)
+    return res.status(409).json({ 
+      error: "Ride already accepted by another puller",
+      acceptedBy: ride.pullerId,
+      acceptedAt: ride.acceptedAt
+    });
+  }
+
+  // Cancel timeout if ride is accepted
+  if (activeRideAssignments.has(rideId)) {
+    const assignment = activeRideAssignments.get(rideId);
+    clearTimeout(assignment.timeoutId);
+    activeRideAssignments.delete(rideId);
+
+    // TEST CASE 8: Notify other pullers that request was filled
+    for (const otherPullerId of assignment.availablePullers) {
+      if (otherPullerId !== pullerId) {
+        const otherWs = pullerSockets.get(otherPullerId);
+        if (otherWs) {
+          try {
+            otherWs.send(JSON.stringify({
+              type: "CANCEL_RIDE",
+              rideId: rideId,
+              reason: "Request filled by another puller"
+            }));
+          } catch (error) {
+            console.error(`[DISPATCH] Error notifying ${otherPullerId}:`, error);
+          }
+        }
+      }
+    }
+  }
+
   ride.status = "ACCEPTED";
   ride.pullerId = pullerId;
   ride.acceptedAt = new Date();
   await ride.save();
-  logTestEvent(6, "PASS", `Ride ${rideId} accepted by ${pullerId}`);
-  res.json({ ok: true });
+  
+  await Puller.findOneAndUpdate(
+    { pullerId },
+    { status: "ON_TRIP" }
+  );
+
+  logTestEvent(6, "PASS", `Ride ${rideId} accepted by ${pullerId} at ${ride.acceptedAt}`);
+  res.json({ ok: true, acceptedAt: ride.acceptedAt });
 });
 
 /**
@@ -365,35 +495,81 @@ app.post("/updateLocation", async (req, res) => {
 });
 
 /**
- * POST /completeRide
- * Payload: { rideId, pullerId, dropDistance, points }
+ * POST /confirmPickup
+ * Payload: { rideId, pullerId }
  */
-app.post("/completeRide", async (req, res) => {
-  const { rideId, pullerId, dropDistance, points } = req.body;
+app.post("/confirmPickup", async (req, res) => {
+  const { rideId, pullerId } = req.body;
   const ride = await Ride.findOne({ rideId });
   if (!ride)
   {
     return res.status(404).json({ error: "Ride not found" });
   }
+  if (ride.pullerId !== pullerId)
+  {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  ride.status = "PICKED_UP";
+  await ride.save();
+  logTestEvent(6, "PASS", `Ride ${rideId} pickup confirmed by ${pullerId}`);
+  res.json({ ok: true });
+});
+
+/**
+ * POST /completeRide
+ * Payload: { rideId, pullerId, dropDistance, points, pointStatus }
+ * TEST CASE 7: Point calculation based on GPS accuracy
+ */
+app.post("/completeRide", async (req, res) => {
+  const { rideId, pullerId, dropDistance, points, pointStatus } = req.body;
+  const ride = await Ride.findOne({ rideId });
+  if (!ride) {
+    return res.status(404).json({ error: "Ride not found" });
+  }
+
   ride.status = "COMPLETED";
   ride.completedAt = new Date();
   ride.rewardPoints = points;
+  ride.metadata = ride.metadata || {};
+  ride.metadata.dropDistance = dropDistance;
+  ride.metadata.pointStatus = pointStatus || "REWARDED";
   await ride.save();
 
-  await Puller.findOneAndUpdate(
-    { pullerId },
-    { $inc: { totalPoints: points }, status: "AVAILABLE" }
-  );
+  // TEST CASE 7: Only add points if status is REWARDED (not PENDING)
+  if (pointStatus === "REWARDED") {
+    await Puller.findOneAndUpdate(
+      { pullerId },
+      { $inc: { totalPoints: points }, status: "AVAILABLE" }
+    );
 
-  await PointsHistory.create({
-    pullerId,
-    rideId,
-    delta: points,
-    reason: `Drop distance ${dropDistance}m`,
-  });
+    await PointsHistory.create({
+      pullerId,
+      rideId,
+      delta: points,
+      reason: `Drop distance ${dropDistance}m - Points rewarded`,
+      recordedAt: new Date(),
+    });
 
-  logTestEvent(7, "PASS", `Ride ${rideId} completed with ${points} pts`);
-  res.json({ ok: true });
+    logTestEvent(7, "PASS", `Ride ${rideId} completed with ${points} pts (REWARDED)`);
+  } else {
+    // TEST CASE 7: Points pending for admin review
+    await PointsHistory.create({
+      pullerId,
+      rideId,
+      delta: 0,
+      reason: `Drop distance ${dropDistance}m - Points PENDING (admin review required)`,
+      recordedAt: new Date(),
+    });
+
+    await Puller.findOneAndUpdate(
+      { pullerId },
+      { status: "AVAILABLE" }
+    );
+
+    logTestEvent(7, "PENDING", `Ride ${rideId} completed - ${points} pts PENDING admin review (distance: ${dropDistance}m)`);
+  }
+
+  res.json({ ok: true, pointStatus: pointStatus || "REWARDED", points });
 });
 
 /**
