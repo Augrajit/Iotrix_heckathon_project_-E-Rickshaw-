@@ -7,11 +7,12 @@
  * admin analytics.
  */
 
-require("dotenv").config();
+import "dotenv/config";
 import express, { json } from "express";
 import { createServer } from "http";
 import cors from "cors";
-import mongoose, { connect, connection } from "mongoose";
+import mongoose from "mongoose";
+const { connect, connection } = mongoose;
 import WebSocket, { WebSocketServer } from 'ws';
 import { MongoMemoryServer } from "mongodb-memory-server";
 
@@ -21,7 +22,7 @@ const { Schema, model } = mongoose;
 // -------------------------------------------------------------------
 // Configuration
 // -------------------------------------------------------------------
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 const MONGO_URI =
   process.env.MONGO_URI || "mongodb://localhost:27017/aeras_db";
 
