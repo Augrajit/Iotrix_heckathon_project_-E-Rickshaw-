@@ -219,6 +219,13 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
       int dropLonEnd = msg.indexOf(",", dropLonStart);
       currentRide.dropLon = msg.substring(dropLonStart, dropLonEnd).toDouble();
 
+      int blockIdStart = msg.indexOf("\"blockId\":\"") + 11;
+      int blockIdEnd = msg.indexOf("\"", blockIdStart);
+      if (blockIdStart > 10 && blockIdEnd > blockIdStart)
+      {
+        currentRide.userBlockId = msg.substring(blockIdStart, blockIdEnd);
+      }
+
       currentRide.active = true;
       state = RickshawState::EN_ROUTE_PICKUP;
 
@@ -305,17 +312,35 @@ bool postAcceptRide(const String &rideId)
 
 bool postCompleteRide(const String &rideId, double dropDistance)
 {
+  // TEST CASE 7: GPS Location & Point Allocation
   HTTPClient http;
   http.begin(String(BACKEND_HTTP_URL) + "/completeRide");
   http.addHeader("Content-Type", "application/json");
-  double points = max(0.0, 10.0 - (dropDistance / 10.0));
+  
+  if (!gps.location.isValid())
+  {
+    // TEST CASE 7(e): GPS unavailable at drop location → Manual verification mode
+    logTest(7, "RUN", "GPS unavailable - sending manual verification request");
+    String payload = String("{\"rideId\":\"") + rideId + "\",\"pullerId\":\"" + PULLER_ID + "\","
+                      "\"dropLatitude\":null,\"dropLongitude\":null}";
+    int code = http.POST(payload);
+    http.end();
+    return (code == 200);
+  }
+  
+  // Send GPS coordinates and block ID for point calculation
   String payload = String("{\"rideId\":\"") + rideId + "\",\"pullerId\":\"" + PULLER_ID + "\","
-                    "\"dropDistance\":" + String(dropDistance, 2) + ","
-                    "\"points\":" + String(points, 2) + "}";
+                    "\"dropLatitude\":") + String(gps.location.lat(), 6) + ","
+                    "\"dropLongitude\":") + String(gps.location.lng(), 6) + ","
+                    "\"blockId\":\"" + currentRide.userBlockId + "\"}";
+  
   int code = http.POST(payload);
   if (code == 200)
   {
+    String response = http.getString();
+    Serial.printf("[HTTP %d] completeRide: %s\n", code, response.c_str());
     http.end();
+    logTest(7, "PASS", "Ride completion with GPS coordinates sent");
     return true;
   }
   Serial.printf("[HTTP %d] completeRide\n", code);
