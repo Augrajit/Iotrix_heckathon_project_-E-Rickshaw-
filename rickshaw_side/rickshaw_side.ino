@@ -26,7 +26,7 @@ const char *WIFI_SSID = "YOUR_WIFI_SSID";
 const char *WIFI_PASS = "YOUR_WIFI_PASSWORD";
 const char *BACKEND_WS_HOST = "192.168.0.103";
 const uint16_t BACKEND_WS_PORT = 3000;
-const char *BACKEND_HTTP_URL = "http://192.168.0.103:3000";
+const char *BACKEND_HTTP_URL = "http://192.168.0.103:4000";
 const char *PULLER_ID = "puller-neo-01";
 
 // ---------------------- Timing -------------------------------------
@@ -165,6 +165,26 @@ void connectWiFi()
   }
   Serial.printf("\n[NET] Connected. IP=%s\n", WiFi.localIP().toString().c_str());
   logTest(6, "PASS", "Rickshaw connected to WiFi.");
+  
+  // Test backend connection
+  Serial.println("[NET] Testing backend connection...");
+  HTTPClient http;
+  http.begin(String(BACKEND_HTTP_URL) + "/");
+  http.setTimeout(5000);
+  int httpCode = http.GET();
+  http.end();
+  
+  if (httpCode > 0) {
+    Serial.printf("[✓] Backend reachable! HTTP Code: %d\n", httpCode);
+    logTest(6, "PASS", "Backend server accessible");
+  } else {
+    Serial.printf("[✗] Backend not reachable!\n");
+    Serial.printf("[ERROR] Cannot connect to %s\n", BACKEND_HTTP_URL);
+    Serial.println("[INFO] Check if backend is running and IP address is correct");
+    Serial.printf("[INFO] Backend should be at: %s (HTTP) and %s:%d (WebSocket)\n", 
+                  BACKEND_HTTP_URL, BACKEND_WS_HOST, BACKEND_WS_PORT);
+    logTest(6, "FAIL", "Backend server not accessible");
+  }
 }
 
 void connectWebSocket()
