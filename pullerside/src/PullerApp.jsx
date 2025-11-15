@@ -17,6 +17,7 @@ export default function PullerApp() {
   const [pointsHistory, setPointsHistory] = useState([]);
   const [notificationPermission, setNotificationPermission] = useState(false);
   const [acceptTimeout, setAcceptTimeout] = useState(null);
+  const [shouldConnect, setShouldConnect] = useState(false);
   
   const wsRef = useRef(null);
   const locationWatchId = useRef(null);
@@ -43,9 +44,9 @@ export default function PullerApp() {
     };
   }, []);
 
-  // Connect to WebSocket when pullerId is set
+  // Connect to WebSocket when pullerId is set (only after form submission)
   useEffect(() => {
-    if (!pullerId || isConnected) return;
+    if (!shouldConnect || !pullerId || isConnected) return;
 
     const connectWebSocket = () => {
       try {
@@ -95,7 +96,7 @@ export default function PullerApp() {
         wsRef.current.close();
       }
     };
-  }, [pullerId, isConnected]);
+  }, [shouldConnect, pullerId, isConnected]);
 
   // Track location
   const startLocationTracking = () => {
@@ -405,6 +406,7 @@ export default function PullerApp() {
     e.preventDefault();
     if (pullerId.trim()) {
       setIsConnected(false);
+      setShouldConnect(true); // Trigger WebSocket connection only after form submission
     }
   };
 

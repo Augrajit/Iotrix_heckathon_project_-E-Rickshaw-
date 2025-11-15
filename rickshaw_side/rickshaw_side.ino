@@ -31,6 +31,7 @@ const char *PULLER_ID = "puller-neo-01";
 
 // ---------------------- Timing -------------------------------------
 const uint32_t LOCATION_PUSH_INTERVAL_MS = 4000;
+const uint32_t IDLE_LOCATION_PUSH_INTERVAL_MS = 10000; // Send location every 10s when idle
 const uint32_t GPS_BLANK_TIMEOUT_MS = 8000;
 
 // ---------------------- Ride State ---------------------------------
@@ -45,6 +46,8 @@ struct RideContext
   bool active = false;
   uint32_t lastLocationPush = 0;
 } currentRide;
+
+uint32_t lastIdleLocationPush = 0; // Track location updates when idle
 
 enum class RickshawState
 {
@@ -62,6 +65,7 @@ void connectWebSocket();
 void webSocketEvent(WStype_t type, uint8_t *payload, size_t length);
 void updateDisplay(const String &l1, const String &l2 = "", const String &l3 = "");
 void pushLocation();
+void pushIdleLocation(); // Send location when idle
 bool postAcceptRide(const String &rideId);
 bool postCompleteRide(const String &rideId, double dropDistance);
 double computeDistanceMeters(double lat1, double lon1, double lat2, double lon2);
@@ -107,9 +111,18 @@ void loop()
     }
   }
 
+  // Send location updates when on a ride
   if (currentRide.active && millis() - currentRide.lastLocationPush > LOCATION_PUSH_INTERVAL_MS)
   {
     pushLocation();
+  }
+  
+  // Send location updates when idle (for proximity-based assignment)
+  if (!currentRide.active && gps.location.isValid() && 
+      millis() - lastIdleLocationPush > IDLE_LOCATION_PUSH_INTERVAL_MS)
+  {
+    pushIdleLocation();
+    lastIdleLocationPush = millis();
   }
 
   if (currentRide.active)
@@ -189,7 +202,8 @@ void connectWiFi()
 
 void connectWebSocket()
 {
-  wsClient.begin(BACKEND_WS_HOST, BACKEND_WS_PORT, "/ws/pullers");
+  // WebSocket path doesn't matter - server accepts all connections
+  wsClient.begin(BACKEND_WS_HOST, BACKEND_WS_PORT, "/");
   wsClient.onEvent(webSocketEvent);
   wsClient.setReconnectInterval(5000);
   wsClient.enableHeartbeat(15000, 3000, 2);
@@ -203,19 +217,38 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
   case WStype_CONNECTED:
     Serial.println("[WS] Connected to dispatcher.");
     updateDisplay("WS connected", "Awaiting ride...", "");
-    wsClient.sendTXT(String("{\"type\":\"REGISTER\",\"pullerId\":\"") + PULLER_ID + "\"}");
+    // Register immediately upon connection
+    String registerMsg = String("{\"type\":\"REGISTER\",\"pullerId\":\"") + PULLER_ID + "\"}";
+    wsClient.sendTXT(registerMsg);
+    Serial.printf("[WS] Sent registration: %s\n", registerMsg.c_str());
     break;
 
   case WStype_DISCONNECTED:
     Serial.println("[WS] Disconnected. Reconnecting...");
     updateDisplay("Reconnecting", "to dispatcher", "");
+    // The WebSocket library will automatically reconnect due to setReconnectInterval
+    break;
+  
+  case WStype_ERROR:
+    if (payload && length > 0) {
+      Serial.printf("[WS] Error: %.*s\n", length, payload);
+    } else {
+      Serial.println("[WS] Error: Unknown error");
+    }
     break;
 
   case WStype_TEXT:
   {
     String msg = String((char *)payload);
     Serial.printf("[WS MESSAGE] %s\n", msg.c_str());
-    if (msg.indexOf("ASSIGN_RIDE") >= 0)
+    
+    // Handle REGISTERED confirmation
+    if (msg.indexOf("REGISTERED") >= 0)
+    {
+      Serial.println("[WS] Registration confirmed by backend.");
+      logTest(6, "PASS", "WebSocket registration successful.");
+    }
+    else if (msg.indexOf("ASSIGN_RIDE") >= 0)
     {
       logTest(6, "PASS", "Ride assignment received via WS.");
       // naive parsing (JSON string). For robustness, parse properly.
@@ -303,6 +336,31 @@ void pushLocation()
   }
   http.end();
   currentRide.lastLocationPush = millis();
+}
+
+void pushIdleLocation()
+{
+  if (!gps.location.isValid())
+  {
+    return; // Silently skip if no GPS fix
+  }
+
+  HTTPClient http;
+  String url = String(BACKEND_HTTP_URL) + "/updateLocation";
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+
+  // Send location without rideId when idle
+  String payload = String("{\"pullerId\":\"") + PULLER_ID + "\","
+                    "\"latitude\":" + String(gps.location.lat(), 6) + ","
+                    "\"longitude\":" + String(gps.location.lng(), 6) + "}";
+
+  int code = http.POST(payload);
+  if (code == 200)
+  {
+    Serial.printf("[HTTP %d] Idle location update\n", code);
+  }
+  http.end();
 }
 
 bool postAcceptRide(const String &rideId)
