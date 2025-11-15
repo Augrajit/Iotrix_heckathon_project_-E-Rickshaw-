@@ -8,19 +8,20 @@
  */
 
 require("dotenv").config();
-const express = require("express");
-const { createServer } = require("http");
-const cors = require("cors");
-const mongoose = require("mongoose");
-const { Server: WebSocketServer } = require("ws");
-const { MongoMemoryServer } = require("mongodb-memory-server");
+import express, { json } from "express";
+import { createServer } from "http";
+import cors from "cors";
+import mongoose, { connect, connection } from "mongoose";
+import WebSocket, { WebSocketServer } from 'ws';
+import { MongoMemoryServer } from "mongodb-memory-server";
+
 
 const { Schema, model } = mongoose;
 
 // -------------------------------------------------------------------
 // Configuration
 // -------------------------------------------------------------------
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 3000;
 const MONGO_URI =
   process.env.MONGO_URI || "mongodb://localhost:27017/aeras_db";
 
@@ -31,7 +32,7 @@ let memoryServer = null;
 
 async function connectDatabase() {
   try {
-    await mongoose.connect(MONGO_URI);
+    await connect(MONGO_URI);
     console.log(`[DB] MongoDB connected (${MONGO_URI})`);
   } catch (err) {
     console.error("[DB] Connection failed", err.message);
@@ -42,7 +43,7 @@ async function connectDatabase() {
       },
     });
     const memUri = memoryServer.getUri();
-    await mongoose.connect(memUri);
+    await connect(memUri);
     console.log("[DB] In-memory MongoDB ready");
   }
 }
@@ -50,7 +51,7 @@ async function connectDatabase() {
 connectDatabase();
 
 process.on("SIGINT", async () => {
-  await mongoose.connection.close();
+  await connection.close();
   if (memoryServer) {
     await memoryServer.stop();
   }
@@ -58,7 +59,7 @@ process.on("SIGINT", async () => {
 });
 
 process.on("SIGTERM", async () => {
-  await mongoose.connection.close();
+  await connection.close();
   if (memoryServer) {
     await memoryServer.stop();
   }
@@ -163,7 +164,7 @@ const app = express();
 const server = createServer(app);
 
 app.use(cors());
-app.use(express.json());
+app.use(json());
 
 app.get("/", (_req, res) => {
   res.send({ status: "AERAS backend online" });
@@ -172,7 +173,7 @@ app.get("/", (_req, res) => {
 // -------------------------------------------------------------------
 // WebSocket Dispatcher
 // -------------------------------------------------------------------
-const wss = new WebSocketServer({ server, path: "/ws/pullers" });
+const wss = new WebSocketServer({ port: 3000 });
 
 const pullerSockets = new Map(); // pullerId => ws
 
@@ -507,7 +508,8 @@ function logTestEvent(testId, status, detail)
 // -------------------------------------------------------------------
 // Start server
 // -------------------------------------------------------------------
-server.listen(PORT, () => {
-  console.log(`[SERVER] Listening on port ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`[SERVER] Running on http://0.0.0.0:${PORT}`);
+  console.log(`[SERVER] Backend accessible from devices on network`);
 });
 

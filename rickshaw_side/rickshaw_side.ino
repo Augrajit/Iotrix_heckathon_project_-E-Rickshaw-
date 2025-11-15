@@ -24,9 +24,9 @@ const uint8_t PIN_OLED_SCL = 15;
 // ---------------------- WiFi / Backend -----------------------------
 const char *WIFI_SSID = "YOUR_WIFI_SSID";
 const char *WIFI_PASS = "YOUR_WIFI_PASSWORD";
-const char *BACKEND_WS_HOST = "192.168.1.50";
-const uint16_t BACKEND_WS_PORT = 4000;
-const char *BACKEND_HTTP_URL = "http://192.168.1.50:4000";
+const char *BACKEND_WS_HOST = "192.168.0.103";
+const uint16_t BACKEND_WS_PORT = 3000;
+const char *BACKEND_HTTP_URL = "http://192.168.0.103:3000";
 const char *PULLER_ID = "puller-neo-01";
 
 // ---------------------- Timing -------------------------------------
