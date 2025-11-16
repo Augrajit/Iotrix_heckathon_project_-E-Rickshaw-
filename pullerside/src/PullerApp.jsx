@@ -2,14 +2,51 @@ import { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import "./puller-styles.css";
 
-const API_BASE = "http://localhost:4000";
-const WS_URL = "ws://localhost:3000"; // WebSocket is on port 3000
+// Helpers for dynamic backend targeting
+const getStoredHost = () => {
+  try {
+    const saved = localStorage.getItem("aeras_backend_host");
+    if (saved && typeof saved === "string" && saved.trim().length > 0) return saved.trim();
+  } catch {}
+  if (typeof window !== "undefined" && window.location && window.location.hostname) {
+    return window.location.hostname;
+  }
+  return "localhost";
+};
+// Accept full URLs or raw hosts; return just the hostname/IP
+const sanitizeHost = (input) => {
+  if (!input) return "";
+  let v = input.trim();
+  // Remove trailing slashes
+  v = v.replace(/\/+$/, "");
+  // If includes scheme, parse via URL
+  if (/^https?:\/\//i.test(v) || /^wss?:\/\//i.test(v)) {
+    try {
+      const u = new URL(v);
+      return u.hostname || v;
+    } catch {
+      // fallthrough
+    }
+  }
+  // If contains path, keep before first slash
+  const slashIdx = v.indexOf("/");
+  if (slashIdx > 0) v = v.slice(0, slashIdx);
+  // If contains port, keep before colon
+  const colonIdx = v.indexOf(":");
+  if (colonIdx > 0) v = v.slice(0, colonIdx);
+  // Strip stray protocols
+  v = v.replace(/^https?:\/\//i, "").replace(/^wss?:\/\//i, "").replace(/^ws?:\/\//i, "");
+  return v;
+};
+const buildApiBase = (host) => `http://${host}:4000`;
+const buildWsUrl = (host) => `ws://${host}:3000`;
 
 export default function PullerApp() {
   const [pullerId, setPullerId] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [currentRide, setCurrentRide] = useState(null);
   const [rideStatus, setRideStatus] = useState("IDLE"); // IDLE, ASSIGNED, ACCEPTED, PICKING_UP, ON_TRIP, COMPLETED
+  const [backendHost, setBackendHost] = useState(getStoredHost());
   const [currentLocation, setCurrentLocation] = useState(null);
   const [distanceToPickup, setDistanceToPickup] = useState(null);
   const [distanceToDropoff, setDistanceToDropoff] = useState(null);
@@ -18,10 +55,16 @@ export default function PullerApp() {
   const [notificationPermission, setNotificationPermission] = useState(false);
   const [acceptTimeout, setAcceptTimeout] = useState(null);
   const [shouldConnect, setShouldConnect] = useState(false);
+  const [connectError, setConnectError] = useState("");
   
   const wsRef = useRef(null);
   const locationWatchId = useRef(null);
   const audioRef = useRef(null);
+  const connectTimeoutRef = useRef(null);
+
+  // Derived endpoints from backendHost
+  const API_BASE = buildApiBase(backendHost);
+  const WS_URL = buildWsUrl(backendHost);
 
   // Request notification and geolocation permissions
   useEffect(() => {
@@ -55,6 +98,11 @@ export default function PullerApp() {
 
         ws.onopen = () => {
           console.log("[WS] Connected");
+          setConnectError("");
+          if (connectTimeoutRef.current) {
+            clearTimeout(connectTimeoutRef.current);
+            connectTimeoutRef.current = null;
+          }
           ws.send(JSON.stringify({ type: "REGISTER", pullerId }));
         };
 
@@ -86,14 +134,26 @@ export default function PullerApp() {
         };
       } catch (error) {
         console.error("[WS] Connection error:", error);
+        setConnectError("Unable to open WebSocket connection.");
       }
     };
 
     connectWebSocket();
 
+    // If not connected in 5s, show message
+    connectTimeoutRef.current = setTimeout(() => {
+      if (!isConnected) {
+        setConnectError(`Cannot connect to server at ${WS_URL}. Make sure the backend is running and reachable on your network.`);
+      }
+    }, 5000);
+
     return () => {
       if (wsRef.current) {
         wsRef.current.close();
+      }
+      if (connectTimeoutRef.current) {
+        clearTimeout(connectTimeoutRef.current);
+        connectTimeoutRef.current = null;
       }
     };
   }, [shouldConnect, pullerId, isConnected]);
@@ -207,6 +267,10 @@ export default function PullerApp() {
     }
   };
 
+  // Utils
+  const formatMeters = (m) => (m < 1000 ? `${Math.round(m)}m` : `${(m / 1000).toFixed(2)}km`);
+  const googleMapsLink = (lat, lon) => `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`;
+
   // Notify with audio and vibration
   const triggerNotification = (message) => {
     // Audio using Web Audio API
@@ -254,11 +318,13 @@ export default function PullerApp() {
       pickupLon: data.pickupLon,
       dropLat: data.dropLat,
       dropLon: data.dropLon,
+      priority: data.priority || "NORMAL",
+      distance: typeof data.distance === "number" ? data.distance : null,
     };
     
     setCurrentRide(ride);
     setRideStatus("ASSIGNED");
-    triggerNotification(`New ride from ${data.blockId}. Accept or reject?`);
+    triggerNotification(`New ride (${ride.priority}) from ${data.blockId}${ride.distance !== null ? ` - ${formatMeters(ride.distance)} away` : ""}. Accept or reject?`);
     
     // Auto-pass to next puller if not accepted within 30 seconds (TEST CASE 6)
     const timeout = setTimeout(() => {
@@ -406,6 +472,11 @@ export default function PullerApp() {
     e.preventDefault();
     if (pullerId.trim()) {
       setIsConnected(false);
+      try {
+        const cleaned = sanitizeHost(backendHost);
+        setBackendHost(cleaned);
+        localStorage.setItem("aeras_backend_host", cleaned);
+      } catch {}
       setShouldConnect(true); // Trigger WebSocket connection only after form submission
     }
   };
@@ -423,7 +494,7 @@ export default function PullerApp() {
       </header>
 
       <main className="puller-main">
-        {!pullerId ? (
+        {(!pullerId || !shouldConnect) ? (
           <div className="register-card card">
             <h2>Register Puller</h2>
             <form onSubmit={handleRegister}>
@@ -434,12 +505,32 @@ export default function PullerApp() {
                 onChange={(e) => setPullerId(e.target.value)}
                 required
               />
+              <input
+                type="text"
+                placeholder="Server host/IP (e.g., 192.168.0.103 or http://192.168.0.103:4000)"
+                value={backendHost}
+                onChange={(e) => setBackendHost(e.target.value)}
+                onBlur={(e) => setBackendHost(sanitizeHost(e.target.value))}
+                required
+                style={{ marginTop: 8 }}
+              />
               <button type="submit">Connect</button>
             </form>
+            <div className="hint" style={{ marginTop: 8 }}>
+              Will connect to: <code>{API_BASE}</code> (HTTP), <code>{WS_URL}</code> (WebSocket)
+            </div>
           </div>
-        ) : !isConnected ? (
+        ) : shouldConnect && !isConnected ? (
           <div className="card">
             <p>Connecting to server...</p>
+            {connectError && (
+              <div className="hint warning" style={{ marginTop: 8 }}>
+                {connectError}
+              </div>
+            )}
+            <div className="hint" style={{ marginTop: 8 }}>
+              Trying: <code>{API_BASE}</code> (HTTP), <code>{WS_URL}</code> (WebSocket)
+            </div>
           </div>
         ) : (
           <>
@@ -454,6 +545,17 @@ export default function PullerApp() {
                       📍 Location: {currentLocation.latitude.toFixed(6)}, {currentLocation.longitude.toFixed(6)}
                     </p>
                   )}
+                </div>
+                <div className="points-catalog card">
+                  <h3>🎁 Rewards Catalog</h3>
+                  <ul className="catalog-list">
+                    <li>• 50 pts: Free water bottle</li>
+                    <li>• 100 pts: Mobile recharge ₹50</li>
+                    <li>• 250 pts: Raincoat</li>
+                    <li>• 500 pts: Tyre puncture kit</li>
+                    <li>• 1000 pts: Service voucher</li>
+                  </ul>
+                  <small>Redemptions subject to availability. Contact your admin.</small>
                 </div>
                 {pointsHistory.length > 0 && (
                   <div className="points-history-section">
@@ -478,6 +580,18 @@ export default function PullerApp() {
                   <h2>🔔 New Ride Request</h2>
                 </div>
                 <div className="ride-details">
+                  {currentRide.priority && (
+                    <div className="detail-item">
+                      <span className="label">Priority:</span>
+                      <span className="value">{currentRide.priority}</span>
+                    </div>
+                  )}
+                  {typeof currentRide.distance === "number" && (
+                    <div className="detail-item">
+                      <span className="label">Distance:</span>
+                      <span className="value">{formatMeters(currentRide.distance)}</span>
+                    </div>
+                  )}
                   <div className="detail-item">
                     <span className="label">Ride ID:</span>
                     <span className="value">{currentRide.rideId}</span>
@@ -485,6 +599,14 @@ export default function PullerApp() {
                   <div className="detail-item">
                     <span className="label">Block ID:</span>
                     <span className="value">{currentRide.blockId}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="label">Pickup:</span>
+                    <span className="value">{currentRide.pickupLat.toFixed(6)}, {currentRide.pickupLon.toFixed(6)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="label">Drop:</span>
+                    <span className="value">{currentRide.dropLat.toFixed(6)}, {currentRide.dropLon.toFixed(6)}</span>
                   </div>
                   <div className="detail-buttons">
                     <button className="btn-accept" onClick={acceptRide}>
@@ -531,6 +653,16 @@ export default function PullerApp() {
                       </div>
                     </div>
                   )}
+                  <div className="nav-buttons">
+                    <a
+                      className="btn-nav"
+                      href={googleMapsLink(currentRide.pickupLat, currentRide.pickupLon)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      🗺️ Open Pickup in Google Maps
+                    </a>
+                  </div>
                   {rideStatus === "PICKING_UP" && (
                     <button
                       className="btn-confirm-pickup"
@@ -578,6 +710,16 @@ export default function PullerApp() {
                       </div>
                     </div>
                   )}
+                  <div className="nav-buttons">
+                    <a
+                      className="btn-nav"
+                      href={googleMapsLink(currentRide.dropLat, currentRide.dropLon)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      🗺️ Open Drop-off in Google Maps
+                    </a>
+                  </div>
                   {distanceToDropoff !== null && distanceToDropoff <= 50 && (
                     <button className="btn-complete" onClick={completeRide}>
                       ✅ Complete Ride

@@ -18,12 +18,12 @@ HardwareSerial SerialGPS(1); // UART1 on ESP32
 TinyGPSPlus gps;
 
 // ---------------------- Pin Definitions ----------------------------
-const uint8_t PIN_OLED_SDA = 4;
-const uint8_t PIN_OLED_SCL = 15;
+const uint8_t PIN_OLED_SDA = 22;
+const uint8_t PIN_OLED_SCL = 21;
 
 // ---------------------- WiFi / Backend -----------------------------
-const char *WIFI_SSID = "YOUR_WIFI_SSID";
-const char *WIFI_PASS = "YOUR_WIFI_PASSWORD";
+const char *WIFI_SSID = "TP-Link_6C58";
+const char *WIFI_PASS = "Na2co3.10h2o";
 const char *BACKEND_WS_HOST = "192.168.0.103";
 const uint16_t BACKEND_WS_PORT = 3000;
 const char *BACKEND_HTTP_URL = "http://192.168.0.103:4000";
@@ -73,6 +73,11 @@ void logTest(uint8_t testId, const String &status, const String &detail);
 
 WebSocketsClient wsClient;
 uint32_t lastGPSFix = 0;
+bool backendReachable = false;
+uint32_t lastBackendCheck = 0;
+const uint32_t BACKEND_CHECK_INTERVAL_MS = 30000; // Check backend every 30 seconds
+const uint32_t WS_RECONNECT_DELAY_MS = 10000; // Wait 10 seconds before retrying WebSocket
+uint32_t lastWSReconnectAttempt = 0;
 
 // ---------------------- Setup --------------------------------------
 void setup()
@@ -93,15 +98,43 @@ void setup()
 
   SerialGPS.begin(9600, SERIAL_8N1, 16, 17); // GPS pins
   connectWiFi();
-  connectWebSocket();
-
-  updateDisplay("Rickshaw Ready", "Awaiting ride...", "");
+  
+  // Only connect WebSocket if backend is reachable
+  if (backendReachable) {
+    connectWebSocket();
+    updateDisplay("Rickshaw Ready", "Awaiting ride...", "");
+  } else {
+    updateDisplay("Backend offline", "Check server IP", "Retrying...");
+  }
 }
 
 // ---------------------- Loop ---------------------------------------
 void loop()
 {
-  wsClient.loop();
+  // Periodically check if backend becomes available
+  if (!backendReachable && (millis() - lastBackendCheck > BACKEND_CHECK_INTERVAL_MS)) {
+    Serial.println("[NET] Retrying backend connection...");
+    HTTPClient http;
+    http.begin(String(BACKEND_HTTP_URL) + "/");
+    http.setTimeout(5000);
+    int httpCode = http.GET();
+    http.end();
+    
+    if (httpCode > 0) {
+      Serial.printf("[✓] Backend is now reachable! HTTP Code: %d\n", httpCode);
+      backendReachable = true;
+      updateDisplay("Backend online", "Connecting...", "");
+      connectWebSocket();
+    } else {
+      Serial.println("[✗] Backend still not reachable. Will retry in 30s...");
+      lastBackendCheck = millis();
+    }
+  }
+  
+  // Only run WebSocket loop if backend is reachable
+  if (backendReachable) {
+    wsClient.loop();
+  }
 
   while (SerialGPS.available())
   {
@@ -190,24 +223,35 @@ void connectWiFi()
   if (httpCode > 0) {
     Serial.printf("[✓] Backend reachable! HTTP Code: %d\n", httpCode);
     logTest(6, "PASS", "Backend server accessible");
+    backendReachable = true;
   } else {
     Serial.printf("[✗] Backend not reachable!\n");
     Serial.printf("[ERROR] Cannot connect to %s\n", BACKEND_HTTP_URL);
     Serial.println("[INFO] Check if backend is running and IP address is correct");
     Serial.printf("[INFO] Backend should be at: %s (HTTP) and %s:%d (WebSocket)\n", 
                   BACKEND_HTTP_URL, BACKEND_WS_HOST, BACKEND_WS_PORT);
+    Serial.println("[INFO] Will retry connection periodically...");
     logTest(6, "FAIL", "Backend server not accessible");
+    backendReachable = false;
   }
+  lastBackendCheck = millis();
 }
 
 void connectWebSocket()
 {
+  if (!backendReachable) {
+    Serial.println("[WS] Skipping WebSocket connection - backend not reachable");
+    updateDisplay("Backend offline", "Retrying...", "");
+    return;
+  }
+  
   // WebSocket path doesn't matter - server accepts all connections
   wsClient.begin(BACKEND_WS_HOST, BACKEND_WS_PORT, "/");
   wsClient.onEvent(webSocketEvent);
-  wsClient.setReconnectInterval(5000);
+  wsClient.setReconnectInterval(10000); // Increased to 10 seconds
   wsClient.enableHeartbeat(15000, 3000, 2);
   Serial.println("[WS] Connecting to backend...");
+  lastWSReconnectAttempt = millis();
 }
 
 void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
@@ -215,6 +259,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
   switch (type)
   {
   case WStype_CONNECTED:
+  {
     Serial.println("[WS] Connected to dispatcher.");
     updateDisplay("WS connected", "Awaiting ride...", "");
     // Register immediately upon connection
@@ -222,12 +267,25 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
     wsClient.sendTXT(registerMsg);
     Serial.printf("[WS] Sent registration: %s\n", registerMsg.c_str());
     break;
+  }
 
   case WStype_DISCONNECTED:
-    Serial.println("[WS] Disconnected. Reconnecting...");
-    updateDisplay("Reconnecting", "to dispatcher", "");
-    // The WebSocket library will automatically reconnect due to setReconnectInterval
+  {
+    uint32_t timeSinceLastAttempt = millis() - lastWSReconnectAttempt;
+    if (timeSinceLastAttempt > WS_RECONNECT_DELAY_MS) {
+      Serial.println("[WS] Disconnected. Will retry connection...");
+      updateDisplay("WS disconnected", "Retrying...", "");
+      lastWSReconnectAttempt = millis();
+      // Only reconnect if backend is still reachable
+      if (backendReachable) {
+        // The WebSocket library will automatically reconnect due to setReconnectInterval
+      } else {
+        Serial.println("[WS] Backend not reachable - stopping reconnection attempts");
+        updateDisplay("Backend offline", "Check server", "");
+      }
+    }
     break;
+  }
   
   case WStype_ERROR:
     if (payload && length > 0) {

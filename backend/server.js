@@ -15,6 +15,7 @@ import mongoose from "mongoose";
 const { connect, connection } = mongoose;
 import WebSocket, { WebSocketServer } from 'ws';
 import { MongoMemoryServer } from "mongodb-memory-server";
+import os from "os";
 
 
 const { Schema, model } = mongoose;
@@ -168,6 +169,20 @@ const server = createServer(app);
 app.use(cors());
 app.use(json());
 
+// Allow Private Network Access (Chrome/Safari) and broad CORS for LAN usage
+app.use((req, res, next) => {
+  // If you want to restrict to a specific origin, replace * with your UI origin
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  // Critical for cross-origin requests from localhost -> 192.168.x.x on Chrome
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.get("/", (_req, res) => {
   res.send({ status: "AERAS backend online" });
 });
@@ -176,6 +191,33 @@ app.get("/", (_req, res) => {
 // WebSocket Dispatcher
 // -------------------------------------------------------------------
 const wss = new WebSocketServer({ port: 3000 });
+
+// Helper: enumerate local IPv4 addresses for quick diagnostics
+function getLocalIPv4Addresses() {
+  const nets = os.networkInterfaces();
+  const results = [];
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name] || []) {
+      if (net.family === 'IPv4' && !net.internal) {
+        results.push({ iface: name, address: net.address });
+      }
+    }
+  }
+  return results;
+}
+
+// WebSocket diagnostics
+wss.on("error", (err) => {
+  console.error("[WS] Server error:", err);
+});
+console.log("[WS] Dispatcher listening on ws://0.0.0.0:3000");
+const ips = getLocalIPv4Addresses();
+if (ips.length) {
+  console.log("[WS] Access via:");
+  for (const ip of ips) {
+    console.log(`   - ws://${ip.address}:3000  (iface: ${ip.iface})`);
+  }
+}
 
 const pullerSockets = new Map(); // pullerId => ws
 
@@ -690,3 +732,28 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] Backend accessible from devices on network`);
 });
 
+// HTTP server diagnostics
+server.on("listening", () => {
+  const addrs = getLocalIPv4Addresses();
+  if (addrs.length) {
+    console.log("[SERVER] Access via:");
+    for (const ip of addrs) {
+      console.log(`   - http://${ip.address}:${PORT}  (iface: ${ip.iface})`);
+    }
+  }
+});
+
+server.on("error", (err) => {
+  console.error("[SERVER] Error:", err.message);
+  if (err.code === "EADDRINUSE") {
+    console.error(`[SERVER] Port ${PORT} is already in use. Choose another port or stop the conflicting process.`);
+  }
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[PROCESS] Unhandled Promise Rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[PROCESS] Uncaught Exception:", err);
+});
